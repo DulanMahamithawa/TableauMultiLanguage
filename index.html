@@ -166,6 +166,33 @@
     #translate-btn:disabled { opacity: 0.45; cursor: not-allowed; }
     #translate-btn .btn-icon { font-size: 14px; }
 
+    /* refresh button */
+    #refresh-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      border: 1.5px solid var(--border);
+      background: var(--surface);
+      color: var(--silver-lt);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.18s;
+    }
+    #refresh-btn:hover:not(:disabled) { border-color: var(--teal-lt); color: var(--white); }
+    #refresh-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    #refresh-btn.spinning .btn-icon { display: inline-block; animation: spin 0.7s linear infinite; }
+    #refresh-btn .btn-icon { font-size: 14px; }
+
+    /* flash highlight on table when refreshed */
+    @keyframes flashUpdate {
+      0%   { background: rgba(13,124,143,0.18); }
+      100% { background: transparent; }
+    }
+    .row-flash { animation: flashUpdate 0.6s ease-out; }
+
     /* cache indicator */
     #cache-badge {
       font-size: 10px;
@@ -384,6 +411,9 @@
     </button>
     <span class="sep"></span>
     <span id="cache-badge">✓ cached</span>
+    <button id="refresh-btn" disabled title="Re-fetch data from Tableau (applies after filter changes)">
+      <span class="btn-icon">↺</span> Refresh
+    </button>
     <button id="translate-btn" disabled>
       <span class="btn-icon">✨</span> Translate
     </button>
@@ -452,6 +482,7 @@ const $ = id => document.getElementById(id);
 const wsSelect      = $("ws-select");
 const apiKeyInput   = $("api-key-input");
 const translateBtn  = $("translate-btn");
+const refreshBtn    = $("refresh-btn");
 const statusDot     = $("status-dot");
 const statusText    = $("status-text");
 const placeholder   = $("placeholder");
@@ -566,6 +597,9 @@ function initTableau() {
   });
 }
 
+// Track active filter event listener unsubscribe functions
+const filterUnsubscribers = [];
+
 function populateWorksheets() {
   const dashboard = tableau.extensions.dashboardContent.dashboard;
   const sheets = dashboard.worksheets;
@@ -578,10 +612,46 @@ function populateWorksheets() {
     wsSelect.appendChild(opt);
   });
 
+  // Register filter-changed listeners on ALL worksheets on the dashboard.
+  // When any filter fires, if it's on the currently selected worksheet, auto-refresh.
+  registerFilterListeners(sheets);
+
   if (sheets.length === 1) {
     wsSelect.value = "0";
     handleWorksheetChange();
   }
+}
+
+function registerFilterListeners(sheets) {
+  // Remove any previous listeners first
+  filterUnsubscribers.forEach(fn => { try { fn(); } catch(e) {} });
+  filterUnsubscribers.length = 0;
+
+  sheets.forEach((ws, i) => {
+    try {
+      const unsubscribe = ws.addEventListener(
+        tableau.TableauEventType.FilterChanged,
+        () => handleFilterChange(String(i))
+      );
+      filterUnsubscribers.push(unsubscribe);
+    } catch(e) {
+      // Some worksheet types don't support filter events — skip silently
+    }
+  });
+}
+
+// Debounce so rapid filter changes don't fire multiple fetches
+let filterDebounceTimer = null;
+
+function handleFilterChange(worksheetIndex) {
+  // Only react if this worksheet is currently selected
+  if (wsSelect.value !== worksheetIndex) return;
+
+  clearTimeout(filterDebounceTimer);
+  filterDebounceTimer = setTimeout(async () => {
+    setStatus("Filter changed — refreshing data…", "loading");
+    await refreshData(worksheetIndex);
+  }, 400); // wait 400ms after last filter event before re-fetching
 }
 
 function populateWorksheetsMock() {
@@ -697,6 +767,7 @@ async function handleWorksheetChange() {
 
     setStatus(`Loaded ${data.rows.length} rows × ${data.columns.length} columns`, "ok");
     updateTranslateBtn();
+    updateRefreshBtn();
 
     // Render in English immediately (no API call needed)
     renderTable(data.columns.map(c => c.fieldName), data.rows, "EN");
@@ -709,6 +780,59 @@ async function handleWorksheetChange() {
 }
 
 wsSelect.addEventListener("change", handleWorksheetChange);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REFRESH — re-fetch data and re-render in current language
+// ─────────────────────────────────────────────────────────────────────────────
+async function refreshData(worksheetIndex) {
+  const idx = worksheetIndex !== undefined ? worksheetIndex : wsSelect.value;
+  if (!idx) return;
+
+  // Spin the refresh button icon
+  refreshBtn.classList.add("spinning");
+  refreshBtn.disabled = true;
+  translateBtn.disabled = true;
+
+  try {
+    const data = await fetchWorksheetData(idx);
+    state.rawData = data;
+
+    // Keep translation cache — headers haven't changed, only rows have
+    // Re-render in whatever language is currently active
+    if (state.currentLang === "EN" || !state.translationCache[state.currentLang]) {
+      renderTable(data.columns.map(c => c.fieldName), data.rows, state.currentLang);
+    } else {
+      const translations = state.translationCache[state.currentLang];
+      const translatedHeaders = data.columns.map(c => translations[c.fieldName] || c.fieldName);
+      renderTable(translatedHeaders, data.rows, state.currentLang, data.columns.map(c => c.fieldName));
+    }
+
+    // Flash rows to signal the update visually
+    document.querySelectorAll("#table-body tr").forEach((row, i) => {
+      setTimeout(() => {
+        row.classList.add("row-flash");
+        setTimeout(() => row.classList.remove("row-flash"), 600);
+      }, i * 18);
+    });
+
+    showTable();
+    const rowCount = data.rows.length;
+    setStatus(`Refreshed — ${rowCount} rows in ${LANGUAGES[state.currentLang].label}`, "ok");
+
+  } catch(err) {
+    showError(`Refresh failed: ${err.message}`);
+  } finally {
+    refreshBtn.classList.remove("spinning");
+    updateTranslateBtn();
+    updateRefreshBtn();
+  }
+}
+
+refreshBtn.addEventListener("click", () => refreshData());
+
+function updateRefreshBtn() {
+  refreshBtn.disabled = !state.rawData;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TRANSLATE BUTTON
