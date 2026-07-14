@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Multi-Language Dashboard</title>
+
+  <!-- Tableau Extensions API — primary CDN with fallback -->
+  <script src="https://cdn.jsdelivr.net/npm/@tableau/extensions-api@1/lib/tableau.extensions.1.latest.min.js"
+    onerror="var s=document.createElement('script');s.src='https://extensions.tableausoftware.com/tableau.extensions.1.latest.min.js';document.head.appendChild(s)">
+  </script>
+
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0F1B2D;
+      --surface:     #1A3252;
+      --surface2:    #1e3d63;
+      --teal:        #0D7C8F;
+      --teal-lt:     #17A5BC;
+      --mint:        #C8EFF4;
+      --white:       #FFFFFF;
+      --silver:      #94A3B8;
+      --silver-lt:   #CBD5E1;
+      --amber:       #F59E0B;
+      --green:       #10B981;
+      --red:         #EF4444;
+      --border:      rgba(255,255,255,0.08);
+      --radius:      8px;
+      --radius-sm:   4px;
+      --font:        'Inter', system-ui, sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--white);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    /* ── Layout shells ────────────────────────────────────────────── */
+    #app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    /* ── Top bar ──────────────────────────────────────────────────── */
+    #topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #topbar .logo {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--teal-lt);
+      white-space: nowrap;
+    }
+
+    #topbar .sep { flex: 1; }
+
+    /* worksheet selector */
+    #ws-label { font-size: 11px; color: var(--silver); white-space: nowrap; }
+    #ws-select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--white);
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      max-width: 180px;
+    }
+    #ws-select:focus { outline: 2px solid var(--teal); }
+
+    /* api key input */
+    #key-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #key-label { font-size: 11px; color: var(--silver); white-space: nowrap; }
+    #api-key-input {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--white);
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: var(--radius-sm);
+      width: 220px;
+      font-family: monospace;
+    }
+    #api-key-input::placeholder { color: var(--silver); opacity: 0.5; }
+    #api-key-input:focus { outline: 2px solid var(--teal); }
+
+    /* ── Language switcher ────────────────────────────────────────── */
+    #lang-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #lang-bar .lang-label {
+      font-size: 11px;
+      color: var(--silver);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-right: 4px;
+    }
+
+    .lang-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      border: 1.5px solid var(--border);
+      background: var(--surface);
+      color: var(--silver-lt);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.18s ease;
+      user-select: none;
+    }
+    .lang-btn:hover { border-color: var(--teal); color: var(--white); }
+    .lang-btn.active {
+      background: var(--teal);
+      border-color: var(--teal);
+      color: var(--white);
+      font-weight: 700;
+    }
+    .lang-btn .flag { font-size: 16px; line-height: 1; }
+
+    #lang-bar .sep { flex: 1; }
+
+    /* translate button */
+    #translate-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 16px;
+      border-radius: 20px;
+      border: none;
+      background: var(--teal);
+      color: var(--white);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.18s;
+    }
+    #translate-btn:hover { background: var(--teal-lt); }
+    #translate-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    #translate-btn .btn-icon { font-size: 14px; }
+
+    /* cache indicator */
+    #cache-badge {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: rgba(16,185,129,0.15);
+      color: var(--green);
+      border: 1px solid rgba(16,185,129,0.3);
+      display: none;
+    }
+
+    /* ── Status bar ───────────────────────────────────────────────── */
+    #status-bar {
+      padding: 6px 16px;
+      font-size: 11px;
+      color: var(--silver);
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      min-height: 28px;
+    }
+    #status-bar .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--silver);
+      flex-shrink: 0;
+    }
+    #status-bar .dot.green  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    #status-bar .dot.amber  { background: var(--amber); box-shadow: 0 0 6px var(--amber); animation: pulse 1.2s infinite; }
+    #status-bar .dot.red    { background: var(--red); }
+
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+
+    /* ── Main content area ────────────────────────────────────────── */
+    #content {
+      flex: 1;
+      overflow: auto;
+      padding: 16px;
+    }
+
+    /* ── Placeholder / empty state ────────────────────────────────── */
+    #placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 12px;
+      color: var(--silver);
+      text-align: center;
+    }
+    #placeholder .ph-icon { font-size: 40px; opacity: 0.4; }
+    #placeholder .ph-title { font-size: 15px; font-weight: 600; color: var(--silver-lt); }
+    #placeholder .ph-sub { font-size: 12px; max-width: 320px; }
+
+    /* ── Loading spinner ──────────────────────────────────────────── */
+    #loading {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 14px;
+    }
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid var(--border);
+      border-top-color: var(--teal);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading .load-text { font-size: 13px; color: var(--silver); }
+    #loading .load-sub  { font-size: 11px; color: var(--silver); opacity: 0.6; }
+
+    /* ── Data table ───────────────────────────────────────────────── */
+    #table-wrap {
+      display: none;
+      overflow: auto;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    thead { position: sticky; top: 0; z-index: 10; }
+
+    thead th {
+      background: var(--teal);
+      color: var(--white);
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 10px 14px;
+      text-align: left;
+      white-space: nowrap;
+      border-right: 1px solid rgba(255,255,255,0.1);
+    }
+    thead th:last-child { border-right: none; }
+
+    /* original name sub-label in header */
+    thead th .orig {
+      display: block;
+      font-size: 9px;
+      font-weight: 400;
+      opacity: 0.65;
+      text-transform: none;
+      letter-spacing: 0;
+      margin-top: 2px;
+    }
+
+    tbody tr:nth-child(even) { background: var(--surface); }
+    tbody tr:nth-child(odd)  { background: var(--bg); }
+    tbody tr:hover { background: var(--surface2); }
+
+    tbody td {
+      padding: 8px 14px;
+      border-right: 1px solid var(--border);
+      color: var(--silver-lt);
+      white-space: nowrap;
+    }
+    tbody td:first-child { color: var(--white); font-weight: 500; }
+    tbody td:last-child { border-right: none; }
+
+    /* ── Translation overlay badge ────────────────────────────────── */
+    #lang-badge {
+      display: none;
+      position: fixed;
+      bottom: 14px;
+      right: 14px;
+      background: var(--teal);
+      color: var(--white);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 5px 12px;
+      border-radius: 20px;
+      letter-spacing: 0.05em;
+      box-shadow: 0 4px 16px rgba(13,124,143,0.5);
+      pointer-events: none;
+    }
+
+    /* ── Error box ────────────────────────────────────────────────── */
+    #error-box {
+      display: none;
+      margin: 16px;
+      padding: 14px 16px;
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.3);
+      border-radius: var(--radius);
+      color: #FCA5A5;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    #error-box strong { color: var(--red); }
+
+    /* ── Dev mode banner ──────────────────────────────────────────── */
+    #dev-banner {
+      background: rgba(245,158,11,0.12);
+      border-bottom: 1px solid rgba(245,158,11,0.25);
+      color: var(--amber);
+      font-size: 11px;
+      padding: 5px 16px;
+      text-align: center;
+      display: none;
+      flex-shrink: 0;
+    }
+
+    /* ── Scrollbar styling ────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--teal); }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Dev mode warning -->
+  <div id="dev-banner">
+    ⚠ Running in Dev/Demo mode — using mock data since Tableau Extensions API is not available
+  </div>
+
+  <!-- Top bar: worksheet selector + API key -->
+  <div id="topbar">
+    <span class="logo">🌐 AI Translator</span>
+    <span class="sep"></span>
+    <label id="ws-label" for="ws-select">Worksheet:</label>
+    <select id="ws-select">
+      <option value="">— select worksheet —</option>
+    </select>
+    <div id="key-wrap">
+      <label id="key-label" for="api-key-input">API Key:</label>
+      <input id="api-key-input" type="password" placeholder="sk-ant-api03-..." spellcheck="false" />
+    </div>
+  </div>
+
+  <!-- Language switcher -->
+  <div id="lang-bar">
+    <span class="lang-label">Language:</span>
+    <button class="lang-btn active" data-lang="EN" data-label="English">
+      <span class="flag">🇬🇧</span> English
+    </button>
+    <button class="lang-btn" data-lang="FR" data-label="French">
+      <span class="flag">🇫🇷</span> Français
+    </button>
+    <button class="lang-btn" data-lang="SV" data-label="Svenska">
+      <span class="flag">🇸🇪</span> Svenska
+    </button>
+    <span class="sep"></span>
+    <span id="cache-badge">✓ cached</span>
+    <button id="translate-btn" disabled>
+      <span class="btn-icon">✨</span> Translate
+    </button>
+  </div>
+
+  <!-- Status bar -->
+  <div id="status-bar">
+    <div class="dot" id="status-dot"></div>
+    <span id="status-text">Initializing…</span>
+  </div>
+
+  <!-- Error box -->
+  <div id="error-box"></div>
+
+  <!-- Main content -->
+  <div id="content">
+    <div id="placeholder">
+      <div class="ph-icon">📊</div>
+      <div class="ph-title">Select a worksheet to begin</div>
+      <div class="ph-sub">Choose a worksheet from the dropdown above, then click Translate to render it in your selected language.</div>
+    </div>
+    <div id="loading">
+      <div class="spinner"></div>
+      <div class="load-text" id="load-text">Translating with AI…</div>
+      <div class="load-sub" id="load-sub">Calling Claude API — usually takes 1–2 seconds</div>
+    </div>
+    <div id="table-wrap">
+      <table id="data-table">
+        <thead id="table-head"></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Active language badge -->
+  <div id="lang-badge"></div>
+
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE
+// ─────────────────────────────────────────────────────────────────────────────
+const state = {
+  currentLang: "EN",
+  currentWorksheet: null,
+  rawData: null,          // { columns: [{fieldName}], rows: [[cell,...]] }
+  translationCache: {},   // { "FR": { "Revenue": "Chiffre d'affaires", ... }, ... }
+  isTableauReady: false,
+  isDevMode: false,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LANGUAGE CONFIG
+// ─────────────────────────────────────────────────────────────────────────────
+const LANGUAGES = {
+  EN: { label: "English",  flag: "🇬🇧", locale: "en" },
+  FR: { label: "French",   flag: "🇫🇷", locale: "fr" },
+  SV: { label: "Swedish",  flag: "🇸🇪", locale: "sv" },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DOM REFS
+// ─────────────────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const wsSelect      = $("ws-select");
+const apiKeyInput   = $("api-key-input");
+const translateBtn  = $("translate-btn");
+const statusDot     = $("status-dot");
+const statusText    = $("status-text");
+const placeholder   = $("placeholder");
+const loading       = $("loading");
+const tableWrap     = $("table-wrap");
+const tableHead     = $("table-head");
+const tableBody     = $("table-body");
+const langBadge     = $("lang-badge");
+const cacheBadge    = $("cache-badge");
+const errorBox      = $("error-box");
+const devBanner     = $("dev-banner");
+const loadText      = $("load-text");
+const loadSub       = $("load-sub");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATUS HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+function setStatus(msg, type = "idle") {
+  statusText.textContent = msg;
+  statusDot.className = "dot " + (type === "ok" ? "green" : type === "loading" ? "amber" : type === "error" ? "red" : "");
+}
+
+function showError(msg) {
+  errorBox.style.display = "block";
+  errorBox.innerHTML = `<strong>Error:</strong> ${msg}`;
+  setStatus("Error — see message above", "error");
+}
+
+function clearError() {
+  errorBox.style.display = "none";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTENT VISIBILITY
+// ─────────────────────────────────────────────────────────────────────────────
+function showPlaceholder() {
+  placeholder.style.display = "flex";
+  loading.style.display = "none";
+  tableWrap.style.display = "none";
+}
+
+function showLoading(text = "Translating with AI…", sub = "Calling Claude API — usually takes 1–2 seconds") {
+  loadText.textContent = text;
+  loadSub.textContent = sub;
+  placeholder.style.display = "none";
+  loading.style.display = "flex";
+  tableWrap.style.display = "none";
+}
+
+function showTable() {
+  placeholder.style.display = "none";
+  loading.style.display = "none";
+  tableWrap.style.display = "block";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MOCK DATA — used in dev/demo mode when Tableau API isn't available
+// ─────────────────────────────────────────────────────────────────────────────
+const MOCK_DATA = {
+  columns: [
+    { fieldName: "Customer Name" },
+    { fieldName: "Region" },
+    { fieldName: "Order Date" },
+    { fieldName: "Product Category" },
+    { fieldName: "Revenue" },
+    { fieldName: "Quantity Sold" },
+    { fieldName: "Profit Margin" },
+    { fieldName: "Discount Rate" },
+  ],
+  rows: [
+    ["Acme Corp",        "Europe",        "2024-01-15", "Electronics",   "$142,500", "450",  "28.4%", "5.0%"],
+    ["GlobalTech Ltd",   "North America", "2024-01-22", "Software",      "$98,200",  "312",  "41.2%", "0.0%"],
+    ["Nordic Solutions", "Scandinavia",   "2024-02-03", "Consulting",    "$67,800",  "89",   "55.1%", "10.0%"],
+    ["Paris Retail SA",  "Europe",        "2024-02-14", "Retail Goods",  "$34,100",  "1240", "12.8%", "15.0%"],
+    ["TechStart GmbH",   "Europe",        "2024-02-28", "Electronics",   "$88,650",  "275",  "31.6%", "7.5%"],
+    ["Maple Industries", "North America", "2024-03-07", "Manufacturing", "$210,400", "840",  "19.3%", "2.5%"],
+    ["Svenska AB",       "Scandinavia",   "2024-03-15", "Software",      "$55,300",  "198",  "48.7%", "0.0%"],
+    ["Lyon Commerce",    "Europe",        "2024-03-22", "Retail Goods",  "$29,750",  "980",  "11.4%", "20.0%"],
+  ],
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TABLEAU INITIALIZATION
+// ─────────────────────────────────────────────────────────────────────────────
+function initTableau() {
+  if (typeof tableau === "undefined" || !tableau.extensions) {
+    // Not inside Tableau — activate dev/demo mode
+    state.isDevMode = true;
+    devBanner.style.display = "block";
+    clearError();
+    setStatus("Demo mode — mock data loaded", "ok");
+    populateWorksheetsMock();
+    return;
+  }
+
+  setStatus("Connecting to Tableau…", "loading");
+
+  tableau.extensions.initializeAsync().then(() => {
+    state.isTableauReady = true;
+    setStatus("Connected to Tableau", "ok");
+    populateWorksheets();
+
+    // Listen for Tableau parameter changes (e.g. Language parameter from flag buttons)
+    listenToParameters();
+
+  }).catch(err => {
+    state.isDevMode = true;
+    devBanner.style.display = "block";
+    clearError();
+    setStatus("Demo mode — mock data loaded", "ok");
+    populateWorksheetsMock();
+  });
+}
+
+function populateWorksheets() {
+  const dashboard = tableau.extensions.dashboardContent.dashboard;
+  const sheets = dashboard.worksheets;
+
+  wsSelect.innerHTML = '<option value="">— select worksheet —</option>';
+  sheets.forEach((ws, i) => {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = ws.name;
+    wsSelect.appendChild(opt);
+  });
+
+  if (sheets.length === 1) {
+    wsSelect.value = "0";
+    handleWorksheetChange();
+  }
+}
+
+function populateWorksheetsMock() {
+  wsSelect.innerHTML = `
+    <option value="">— select worksheet —</option>
+    <option value="mock_sales">Sales Overview (mock)</option>
+    <option value="mock_region">Regional Breakdown (mock)</option>
+  `;
+  // Auto-select first mock worksheet and load data immediately
+  wsSelect.value = "mock_sales";
+  handleWorksheetChange();
+}
+
+async function fetchWorksheetData(worksheetIndex) {
+  if (state.isDevMode) {
+    return MOCK_DATA;
+  }
+
+  const dashboard = tableau.extensions.dashboardContent.dashboard;
+  const ws = dashboard.worksheets[worksheetIndex];
+  state.currentWorksheet = ws;
+
+  const summaryData = await ws.getSummaryDataAsync({ maxRows: 200 });
+
+  const columns = summaryData.columns.map(col => ({
+    fieldName: col.fieldName,
+    dataType: col.dataType,
+  }));
+
+  const rows = summaryData.data.map(row =>
+    row.map(cell => cell.formattedValue)
+  );
+
+  return { columns, rows };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PARAMETER LISTENER — syncs with Tableau [Language] parameter if it exists
+// ─────────────────────────────────────────────────────────────────────────────
+async function listenToParameters() {
+  if (!state.isTableauReady) return;
+  try {
+    const params = await tableau.extensions.dashboardContent.dashboard.getParametersAsync();
+    const langParam = params.find(p =>
+      p.name.toLowerCase().includes("language") || p.name.toLowerCase().includes("lang")
+    );
+
+    if (langParam) {
+      setStatus(`Synced with Tableau parameter: [${langParam.name}]`, "ok");
+
+      langParam.addEventListener(tableau.TableauEventType.ParameterChanged, async (e) => {
+        const val = (await e.getParameterAsync()).currentValue.value.toUpperCase().substring(0, 2);
+        if (LANGUAGES[val] && val !== state.currentLang) {
+          setActiveLang(val);
+          if (state.rawData) await translateAndRender(val);
+        }
+      });
+    }
+  } catch (e) {
+    // No parameter found — that's fine, use the buttons directly
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LANGUAGE BUTTON HANDLERS
+// ─────────────────────────────────────────────────────────────────────────────
+function setActiveLang(lang) {
+  state.currentLang = lang;
+  document.querySelectorAll(".lang-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.lang === lang);
+  });
+
+  // Update cache badge
+  const cached = !!state.translationCache[lang];
+  cacheBadge.style.display = cached ? "block" : "none";
+
+  // Update translate button
+  updateTranslateBtn();
+}
+
+document.querySelectorAll(".lang-btn").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const lang = btn.dataset.lang;
+    setActiveLang(lang);
+
+    // If we already have data loaded, re-render immediately
+    if (state.rawData) {
+      await translateAndRender(lang);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WORKSHEET CHANGE HANDLER
+// ─────────────────────────────────────────────────────────────────────────────
+async function handleWorksheetChange() {
+  const val = wsSelect.value;
+  if (!val) {
+    showPlaceholder();
+    translateBtn.disabled = true;
+    return;
+  }
+
+  clearError();
+  showLoading("Loading worksheet data…", "Fetching from Tableau…");
+  setStatus("Fetching data…", "loading");
+
+  try {
+    const data = await fetchWorksheetData(val);
+    state.rawData = data;
+    state.translationCache = {}; // Clear cache when worksheet changes
+    cacheBadge.style.display = "none";
+
+    setStatus(`Loaded ${data.rows.length} rows × ${data.columns.length} columns`, "ok");
+    updateTranslateBtn();
+
+    // Render in English immediately (no API call needed)
+    renderTable(data.columns.map(c => c.fieldName), data.rows, "EN");
+    showTable();
+
+  } catch (err) {
+    showPlaceholder();
+    showError(`Could not load worksheet data: ${err.message}`);
+  }
+}
+
+wsSelect.addEventListener("change", handleWorksheetChange);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TRANSLATE BUTTON
+// ─────────────────────────────────────────────────────────────────────────────
+function updateTranslateBtn() {
+  const hasData = !!state.rawData;
+  const notEN = state.currentLang !== "EN";
+  translateBtn.disabled = !hasData || !notEN;
+}
+
+translateBtn.addEventListener("click", async () => {
+  if (!state.rawData) return;
+  await translateAndRender(state.currentLang);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CORE: TRANSLATE & RENDER
+// ─────────────────────────────────────────────────────────────────────────────
+async function translateAndRender(lang) {
+  clearError();
+
+  if (lang === "EN") {
+    // English — no translation needed, render raw
+    renderTable(
+      state.rawData.columns.map(c => c.fieldName),
+      state.rawData.rows,
+      "EN"
+    );
+    showTable();
+    updateLangBadge("EN");
+    return;
+  }
+
+  // Check cache first
+  if (state.translationCache[lang]) {
+    cacheBadge.style.display = "block";
+    const translations = state.translationCache[lang];
+    const translatedHeaders = state.rawData.columns.map(c =>
+      translations[c.fieldName] || c.fieldName
+    );
+    renderTable(translatedHeaders, state.rawData.rows, lang, state.rawData.columns.map(c => c.fieldName));
+    showTable();
+    updateLangBadge(lang);
+    setStatus(`Rendered in ${LANGUAGES[lang].label} (from cache)`, "ok");
+    return;
+  }
+
+  // Call the LLM
+  const apiKey = apiKeyInput.value.trim();
+  if (!apiKey) {
+    showError(
+      "No API key entered. Please paste your Anthropic API key in the field above. " +
+      "Get one at <a href='https://console.anthropic.com' target='_blank'>console.anthropic.com</a>."
+    );
+    return;
+  }
+
+  showLoading(
+    `Translating to ${LANGUAGES[lang].label}…`,
+    "Sending field names to Claude API — usually 1–2 seconds"
+  );
+  setStatus(`Calling Claude API for ${LANGUAGES[lang].label} translation…`, "loading");
+  translateBtn.disabled = true;
+
+  try {
+    const fieldNames = state.rawData.columns.map(c => c.fieldName);
+    const translations = await callClaudeTranslate(fieldNames, lang, apiKey);
+
+    // Store in cache
+    state.translationCache[lang] = translations;
+    cacheBadge.style.display = "block";
+
+    const translatedHeaders = fieldNames.map(f => translations[f] || f);
+    renderTable(translatedHeaders, state.rawData.rows, lang, fieldNames);
+    showTable();
+    updateLangBadge(lang);
+    setStatus(`Translated to ${LANGUAGES[lang].label} — ${fieldNames.length} fields`, "ok");
+
+  } catch (err) {
+    showPlaceholder();
+    showError(
+      `Translation failed: ${err.message}<br><br>` +
+      `Check that your API key is valid and that you have internet access from this host.`
+    );
+    setStatus("Translation error", "error");
+  } finally {
+    updateTranslateBtn();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLAUDE API CALL
+// ─────────────────────────────────────────────────────────────────────────────
+async function callClaudeTranslate(fieldNames, lang, apiKey) {
+  const langLabel = LANGUAGES[lang].label;
+
+  const prompt = `You are a business intelligence data translator specializing in dashboard localization.
+
+Translate the following data field names (column headers) from English into ${langLabel}.
+
+Rules:
+- Keep translations concise — these appear as column headers in a business dashboard
+- Use professional business terminology appropriate for ${langLabel}-speaking markets  
+- Preserve abbreviations where appropriate (e.g. "ID" stays "ID")
+- For proper nouns or technical terms with no translation, keep the original
+- Return ONLY a valid JSON object — no markdown, no explanation, no code fences
+
+Field names to translate:
+${fieldNames.map(f => `"${f}"`).join(", ")}
+
+Return format exactly like this:
+{"Original Field Name": "Translated Field Name", ...}`;
+
+  // Call via Netlify proxy to avoid CORS — proxy forwards to Anthropic server-side
+  const proxyUrl = window.location.origin + "/.netlify/functions/translate";
+
+  const response = await fetch(proxyUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      apiKey: apiKey,
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(
+      errData.error?.message || `HTTP ${response.status}: ${response.statusText}`
+    );
+  }
+
+  const data = await response.json();
+  const rawText = data.content?.[0]?.text?.trim() || "";
+
+  // Strip any accidental markdown fences
+  const cleaned = rawText.replace(/```json|```/g, "").trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error(`Claude returned invalid JSON. Raw response: ${rawText.substring(0, 200)}`);
+  }
+
+  return parsed;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RENDER TABLE
+// ─────────────────────────────────────────────────────────────────────────────
+function renderTable(headers, rows, lang, originalHeaders = null) {
+  // Build header row
+  tableHead.innerHTML = "";
+  const tr = document.createElement("tr");
+  headers.forEach((header, i) => {
+    const th = document.createElement("th");
+    th.textContent = header;
+    // Show original English name as sub-label when translated
+    if (originalHeaders && originalHeaders[i] && originalHeaders[i] !== header) {
+      const orig = document.createElement("span");
+      orig.className = "orig";
+      orig.textContent = originalHeaders[i];
+      th.appendChild(orig);
+    }
+    tr.appendChild(th);
+  });
+  tableHead.appendChild(tr);
+
+  // Build body rows
+  tableBody.innerHTML = "";
+  rows.forEach(row => {
+    const tr = document.createElement("tr");
+    row.forEach(cell => {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      tr.appendChild(td);
+    });
+    tableBody.appendChild(tr);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LANGUAGE BADGE
+// ─────────────────────────────────────────────────────────────────────────────
+function updateLangBadge(lang) {
+  const { flag, label } = LANGUAGES[lang];
+  langBadge.textContent = `${flag} ${label}`;
+  langBadge.style.display = "block";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESTORE API KEY from sessionStorage (convenience — clears on tab close)
+// ─────────────────────────────────────────────────────────────────────────────
+apiKeyInput.addEventListener("input", () => {
+  sessionStorage.setItem("claude_api_key", apiKeyInput.value);
+});
+const savedKey = sessionStorage.getItem("claude_api_key");
+if (savedKey) apiKeyInput.value = savedKey;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BOOT — defer slightly to ensure Tableau Extensions API script has loaded
+// ─────────────────────────────────────────────────────────────────────────────
+// Give the dynamically-injected Tableau API script time to execute
+window.addEventListener('DOMContentLoaded', () => {
+  setTimeout(initTableau, 100);
+});
+</script>
+</body>
+</html>
