@@ -11,6 +11,9 @@
 //# sourceMappingURL=tableau.extensions.1.17.0-pre.8.min.js.map
   </script>
 
+  <!-- Chart.js for bar/pie chart rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
   <style>
     /* ── Reset & base ─────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -368,7 +371,33 @@
       flex-shrink: 0;
     }
 
-    /* ── Scrollbar styling ────────────────────────────────────────── */
+        /* ── Chart wrap ──────────────────────────────────────────────── */
+    #chart-wrap {
+      display: none;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+    #chart-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #chart-type-label { font-size: 11px; color: var(--silver); text-transform: uppercase; letter-spacing: 0.06em; }
+    #view-toggle { display: flex; gap: 4px; background: var(--surface); padding: 3px; border-radius: 6px; border: 1px solid var(--border); }
+    .view-btn { padding: 4px 12px; border: none; border-radius: 4px; background: transparent; color: var(--silver); font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    .view-btn:hover { color: var(--white); }
+    .view-btn.active { background: var(--teal); color: var(--white); }
+    #chart-container { flex: 1; padding: 16px; position: relative; min-height: 0; display: flex; align-items: center; justify-content: center; }
+    #chart-container canvas { max-height: 380px !important; }
+    #chart-container.hidden { display: none; }
+    #inline-table-wrap { flex: 1; overflow: auto; display: none; padding: 0; }
+    #inline-table-wrap.visible { display: block; }
+
+/* ── Scrollbar styling ────────────────────────────────────────── */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: var(--bg); }
     ::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
@@ -446,6 +475,22 @@
         <tbody id="table-body"></tbody>
       </table>
     </div>
+    <div id="chart-wrap">
+      <div id="chart-toolbar">
+        <span id="chart-type-label"></span>
+        <div id="view-toggle">
+          <button class="view-btn active" data-view="chart" title="Show as chart">
+            <span>◼ Chart</span>
+          </button>
+          <button class="view-btn" data-view="table" title="Show as table">
+            <span>≡ Table</span>
+          </button>
+        </div>
+      </div>
+      <div id="chart-container">
+        <canvas id="main-chart"></canvas>
+      </div>
+    </div>
   </div>
 
   <!-- Active language badge -->
@@ -490,6 +535,10 @@ const loading       = $("loading");
 const tableWrap     = $("table-wrap");
 const tableHead     = $("table-head");
 const tableBody     = $("table-body");
+const chartWrap     = $("chart-wrap");
+const chartTypeLbl  = $("chart-type-label");
+const chartContainer= $("chart-container");
+let   activeChart   = null;   // holds the Chart.js instance
 const langBadge     = $("lang-badge");
 const cacheBadge    = $("cache-badge");
 const errorBox      = $("error-box");
@@ -536,6 +585,14 @@ function showTable() {
   placeholder.style.display = "none";
   loading.style.display = "none";
   tableWrap.style.display = "block";
+  chartWrap.style.display = "none";
+}
+
+function showChart() {
+  placeholder.style.display = "none";
+  loading.style.display = "none";
+  tableWrap.style.display = "none";
+  chartWrap.style.display = "flex";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -781,7 +838,7 @@ function pivotMeasureNamesValues(rawColumns, rawRows, measureNamesIdx, measureVa
     wideRows.push(row);
   });
 
-  return { columns: wideColumns, rows: wideRows };
+  return { columns: wideColumns, rows: wideRows, wasPivoted: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -867,7 +924,6 @@ async function handleWorksheetChange() {
 
     // Render in English immediately (no API call needed)
     renderTable(data.columns.map(c => c.fieldName), data.rows, "EN");
-    showTable();
 
   } catch (err) {
     showPlaceholder();
@@ -957,7 +1013,6 @@ async function translateAndRender(lang) {
       state.rawData.rows,
       "EN"
     );
-    showTable();
     updateLangBadge("EN");
     return;
   }
@@ -970,7 +1025,6 @@ async function translateAndRender(lang) {
       translations[c.fieldName] || c.fieldName
     );
     renderTable(translatedHeaders, state.rawData.rows, lang, state.rawData.columns.map(c => c.fieldName));
-    showTable();
     updateLangBadge(lang);
     setStatus(`Rendered in ${LANGUAGES[lang].label} (from cache)`, "ok");
     return;
@@ -1003,7 +1057,6 @@ async function translateAndRender(lang) {
 
     const translatedHeaders = fieldNames.map(f => translations[f] || f);
     renderTable(translatedHeaders, state.rawData.rows, lang, fieldNames);
-    showTable();
     updateLangBadge(lang);
     setStatus(`Translated to ${LANGUAGES[lang].label} — ${fieldNames.length} fields`, "ok");
 
@@ -1080,16 +1133,62 @@ Return format exactly like this:
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RENDER TABLE
+// CHART TYPE DETECTION
+// Heuristic: if there are exactly 2 columns and the second is numeric,
+// or there are 1 dimension + 1-4 numeric measures, treat as a chart.
+// If Measure Names/Values pattern was detected, it's a crosstab.
+// ─────────────────────────────────────────────────────────────────────────────
+function detectVizType(columns, rows) {
+  if (columns.length < 2) return "table";
+
+  // If a pivot happened, it was originally Measure Names/Values — crosstab
+  // We flag this in state during fetch
+  if (state.rawData && state.rawData.wasPivoted) return "table";
+
+  const numericRe = /^-?[\$€£]?[\d,]+\.?\d*[%KMBkm]?$/;
+
+  // Check how many columns look numeric based on first few rows
+  const sampleRows = rows.slice(0, Math.min(5, rows.length));
+  const numericCols = columns.map((_, colIdx) => {
+    const vals = sampleRows.map(r => (r[colIdx] || "").trim()).filter(Boolean);
+    return vals.length > 0 && vals.every(v => numericRe.test(v));
+  });
+
+  const dimCount     = numericCols.filter(n => !n).length;
+  const measureCount = numericCols.filter(n => n).length;
+
+  // Classic chart shape: 1 dimension + 1 to 5 measures
+  if (dimCount === 1 && measureCount >= 1 && measureCount <= 5) return "chart";
+
+  return "table";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RENDER DISPATCHER — decides table vs chart
 // ─────────────────────────────────────────────────────────────────────────────
 function renderTable(headers, rows, lang, originalHeaders = null) {
+  const vizType = detectVizType(
+    headers.map(h => ({ fieldName: h })),
+    rows
+  );
+
+  if (vizType === "chart") {
+    renderChart(headers, rows, originalHeaders);
+  } else {
+    renderDataTable(headers, rows, originalHeaders);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RENDER DATA TABLE (crosstab)
+// ─────────────────────────────────────────────────────────────────────────────
+function renderDataTable(headers, rows, originalHeaders = null) {
   // Build header row
   tableHead.innerHTML = "";
   const tr = document.createElement("tr");
   headers.forEach((header, i) => {
     const th = document.createElement("th");
     th.textContent = header;
-    // Show original English name as sub-label when translated
     if (originalHeaders && originalHeaders[i] && originalHeaders[i] !== header) {
       const orig = document.createElement("span");
       orig.className = "orig";
@@ -1111,7 +1210,205 @@ function renderTable(headers, rows, lang, originalHeaders = null) {
     });
     tableBody.appendChild(tr);
   });
+
+  showTable();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHART PALETTE
+// ─────────────────────────────────────────────────────────────────────────────
+const CHART_COLORS = [
+  "#0D7C8F", "#17A5BC", "#10B981", "#F59E0B",
+  "#8B5CF6", "#EF4444", "#3B82F6", "#EC4899",
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RENDER CHART (bar or pie)
+// ─────────────────────────────────────────────────────────────────────────────
+function renderChart(headers, rows, originalHeaders = null) {
+  // Destroy previous chart instance if exists
+  if (activeChart) { activeChart.destroy(); activeChart = null; }
+
+  // Identify dimension (first non-numeric col) and measure columns
+  const numericRe = /^-?[\$€£]?[\d,]+\.?\d*[%KMBkm]?$/;
+  const sampleRows = rows.slice(0, Math.min(5, rows.length));
+
+  const numericFlags = headers.map((_, i) => {
+    const vals = sampleRows.map(r => (r[i] || "").trim()).filter(Boolean);
+    return vals.length > 0 && vals.every(v => numericRe.test(v));
+  });
+
+  const dimIdx      = numericFlags.findIndex(n => !n);          // first text column
+  const measureIdxs = numericFlags.map((n,i) => n ? i : -1).filter(i => i !== -1);
+  const measureCount = measureIdxs.length;
+
+  const labels = rows.map(r => r[dimIdx] || "");
+
+  // Parse a formatted value string to a number
+  function parseVal(v) {
+    if (!v) return 0;
+    return parseFloat(v.toString().replace(/[\$€£,%KMBkm,\s]/g, "")) || 0;
+  }
+
+  // ── Choose chart type: pie if 1 measure, bar if multiple ────────────────
+  const isPie = measureCount === 1;
+  const chartType = isPie ? "pie" : "bar";
+
+  // ── Build datasets ────────────────────────────────────────────────────────
+  let datasets;
+  if (isPie) {
+    datasets = [{
+      data: rows.map(r => parseVal(r[measureIdxs[0]])),
+      backgroundColor: rows.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]),
+      borderColor: "#0F1B2D",
+      borderWidth: 2,
+    }];
+  } else {
+    datasets = measureIdxs.map((mIdx, i) => ({
+      label: headers[mIdx],
+      data: rows.map(r => parseVal(r[mIdx])),
+      backgroundColor: CHART_COLORS[i % CHART_COLORS.length] + "CC",
+      borderColor: CHART_COLORS[i % CHART_COLORS.length],
+      borderWidth: 1,
+      borderRadius: 4,
+    }));
+  }
+
+  // ── Chart.js config ───────────────────────────────────────────────────────
+  const commonPlugins = {
+    legend: {
+      display: true,
+      labels: { color: "#CBD5E1", font: { size: 11 }, padding: 12 },
+    },
+    tooltip: {
+      backgroundColor: "#1A3252",
+      titleColor: "#FFFFFF",
+      bodyColor: "#CBD5E1",
+      borderColor: "#0D7C8F",
+      borderWidth: 1,
+    },
+  };
+
+  const config = isPie
+    ? {
+        type: "pie",
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          plugins: {
+            ...commonPlugins,
+            legend: {
+              ...commonPlugins.legend,
+              position: "right",
+            },
+            title: {
+              display: !!originalHeaders,
+              text: originalHeaders ? `${headers[measureIdxs[0]]}` : "",
+              color: "#94A3B8",
+              font: { size: 11 },
+            },
+          },
+        },
+      }
+    : {
+        type: "bar",
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          plugins: commonPlugins,
+          scales: {
+            x: {
+              ticks: { color: "#94A3B8", font: { size: 11 } },
+              grid:  { color: "rgba(255,255,255,0.05)" },
+            },
+            y: {
+              ticks: { color: "#94A3B8", font: { size: 11 } },
+              grid:  { color: "rgba(255,255,255,0.08)" },
+            },
+          },
+        },
+      };
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  // Reset canvas (Chart.js requires a fresh canvas after destroy)
+  chartContainer.innerHTML = '<canvas id="main-chart"></canvas>';
+  const canvas = $("main-chart");
+  activeChart = new Chart(canvas, config);
+
+  // Update toolbar label
+  chartTypeLbl.textContent = isPie ? "🥧 Pie Chart" : "📊 Bar Chart";
+
+  // Set view toggle to chart mode
+  document.querySelectorAll(".view-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.view === "chart");
+  });
+  chartContainer.classList.remove("hidden");
+  const inlineTable = $("inline-table-wrap");
+  if (inlineTable) inlineTable.classList.remove("visible");
+
+  // Store for toggle-to-table use
+  state.lastChartHeaders  = headers;
+  state.lastChartRows     = rows;
+  state.lastOrigHeaders   = originalHeaders;
+
+  showChart();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VIEW TOGGLE (chart ↔ table) inside chart-wrap
+// ─────────────────────────────────────────────────────────────────────────────
+document.querySelectorAll(".view-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const view = btn.dataset.view;
+    document.querySelectorAll(".view-btn").forEach(b =>
+      b.classList.toggle("active", b.dataset.view === view)
+    );
+
+    if (view === "chart") {
+      chartContainer.classList.remove("hidden");
+      const t = $("inline-table-wrap");
+      if (t) t.classList.remove("visible");
+    } else {
+      // Table view — render a small inline table inside chart-wrap
+      chartContainer.classList.add("hidden");
+
+      let inlineWrap = $("inline-table-wrap");
+      if (!inlineWrap) {
+        inlineWrap = document.createElement("div");
+        inlineWrap.id = "inline-table-wrap";
+        chartWrap.appendChild(inlineWrap);
+      }
+
+      // Build table HTML
+      const hdrs = state.lastChartHeaders || [];
+      const rows = state.lastChartRows || [];
+      const orig = state.lastOrigHeaders || null;
+
+      let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+      html += "<thead><tr>";
+      hdrs.forEach((h, i) => {
+        const sub = orig && orig[i] && orig[i] !== h
+          ? `<span style="display:block;font-size:9px;opacity:0.6;font-weight:400">${orig[i]}</span>` : "";
+        html += `<th style="background:#0D7C8F;color:#fff;padding:8px 12px;text-align:left;font-size:11px;white-space:nowrap">${h}${sub}</th>`;
+      });
+      html += "</tr></thead><tbody>";
+      rows.forEach((row, ri) => {
+        const bg = ri % 2 === 0 ? "#0F1B2D" : "#1A3252";
+        html += `<tr style="background:${bg}">`;
+        row.forEach(cell => {
+          html += `<td style="padding:7px 12px;color:#CBD5E1;border-right:1px solid rgba(255,255,255,0.06)">${cell}</td>`;
+        });
+        html += "</tr>";
+      });
+      html += "</tbody></table>";
+
+      inlineWrap.innerHTML = html;
+      inlineWrap.classList.add("visible");
+    }
+  });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LANGUAGE BADGE
