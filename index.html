@@ -564,6 +564,27 @@ const MOCK_DATA = {
   ],
 };
 
+// Mock data for Measure Names / Measure Values pattern (crosstab with
+// multiple measures stacked on the columns shelf)
+const MOCK_DATA_PIVOT = {
+  columns: [
+    { fieldName: "Region" },
+    { fieldName: "Measure Names" },
+    { fieldName: "Measure Values" },
+  ],
+  rows: [
+    ["Europe",        "Revenue",        "$142,500"],
+    ["Europe",        "Quantity Sold",   "450"],
+    ["Europe",        "Profit Margin",   "28.4%"],
+    ["North America", "Revenue",        "$98,200"],
+    ["North America", "Quantity Sold",   "312"],
+    ["North America", "Profit Margin",   "41.2%"],
+    ["Scandinavia",   "Revenue",        "$67,800"],
+    ["Scandinavia",   "Quantity Sold",   "89"],
+    ["Scandinavia",   "Profit Margin",   "55.1%"],
+  ],
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TABLEAU INITIALIZATION
 // ─────────────────────────────────────────────────────────────────────────────
@@ -667,25 +688,100 @@ function populateWorksheetsMock() {
 
 async function fetchWorksheetData(worksheetIndex) {
   if (state.isDevMode) {
-    return MOCK_DATA;
+    // "mock_region" uses the Measure Names/Values pattern for demo purposes
+    return worksheetIndex === "mock_region" ? MOCK_DATA_PIVOT : MOCK_DATA;
   }
 
   const dashboard = tableau.extensions.dashboardContent.dashboard;
   const ws = dashboard.worksheets[worksheetIndex];
   state.currentWorksheet = ws;
 
-  const summaryData = await ws.getSummaryDataAsync({ maxRows: 200 });
+  const summaryData = await ws.getSummaryDataAsync({ maxRows: 500 });
 
-  const columns = summaryData.columns.map(col => ({
+  const rawColumns = summaryData.columns.map(col => ({
     fieldName: col.fieldName,
     dataType: col.dataType,
   }));
 
-  const rows = summaryData.data.map(row =>
+  const rawRows = summaryData.data.map(row =>
     row.map(cell => cell.formattedValue)
   );
 
-  return { columns, rows };
+  // ── Detect Measure Names / Measure Values pattern ───────────────────────
+  // When a crosstab is built with multiple measures on the Columns shelf,
+  // Tableau returns data in a narrow/unpivoted form:
+  //   [Dimension, Measure Names, Measure Values]
+  // We pivot this back to wide form to match what the crosstab actually shows:
+  //   [Dimension, Measure1, Measure2, Measure3, ...]
+  const measureNamesIdx = rawColumns.findIndex(c =>
+    c.fieldName === "Measure Names" || c.fieldName === "Mesure" || c.fieldName.toLowerCase() === "measure names"
+  );
+  const measureValuesIdx = rawColumns.findIndex(c =>
+    c.fieldName === "Measure Values" || c.fieldName === "Valeur" || c.fieldName.toLowerCase() === "measure values"
+  );
+
+  if (measureNamesIdx !== -1 && measureValuesIdx !== -1) {
+    return pivotMeasureNamesValues(rawColumns, rawRows, measureNamesIdx, measureValuesIdx);
+  }
+
+  return { columns: rawColumns, rows: rawRows };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PIVOT — converts Measure Names / Measure Values narrow format → wide format
+// ─────────────────────────────────────────────────────────────────────────────
+function pivotMeasureNamesValues(rawColumns, rawRows, measureNamesIdx, measureValuesIdx) {
+  // 1. Identify the dimension columns (everything that isn't Measure Names/Values)
+  const dimIndices = rawColumns
+    .map((_, i) => i)
+    .filter(i => i !== measureNamesIdx && i !== measureValuesIdx);
+
+  const dimColumns = dimIndices.map(i => rawColumns[i]);
+
+  // 2. Collect all unique measure names in the order they appear
+  const measureOrder = [];
+  const measureSeen = new Set();
+  rawRows.forEach(row => {
+    const mName = row[measureNamesIdx];
+    if (mName && !measureSeen.has(mName)) {
+      measureSeen.add(mName);
+      measureOrder.push(mName);
+    }
+  });
+
+  // 3. Group rows by their dimension key
+  // Key = joined string of all dimension values for that row
+  const grouped = new Map(); // dimKey → { dimValues: [], measures: { name: value } }
+
+  rawRows.forEach(row => {
+    const dimValues = dimIndices.map(i => row[i]);
+    const dimKey = dimValues.join("|||");
+    const mName  = row[measureNamesIdx];
+    const mValue = row[measureValuesIdx];
+
+    if (!grouped.has(dimKey)) {
+      grouped.set(dimKey, { dimValues, measures: {} });
+    }
+    grouped.get(dimKey).measures[mName] = mValue;
+  });
+
+  // 4. Build the wide columns array: dimensions + one column per measure
+  const wideColumns = [
+    ...dimColumns,
+    ...measureOrder.map(m => ({ fieldName: m, dataType: "float" })),
+  ];
+
+  // 5. Build the wide rows array
+  const wideRows = [];
+  grouped.forEach(({ dimValues, measures }) => {
+    const row = [
+      ...dimValues,
+      ...measureOrder.map(m => measures[m] !== undefined ? measures[m] : ""),
+    ];
+    wideRows.push(row);
+  });
+
+  return { columns: wideColumns, rows: wideRows };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
