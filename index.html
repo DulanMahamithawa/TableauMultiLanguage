@@ -745,18 +745,8 @@ function populateWorksheetsMock() {
 
 async function fetchWorksheetData(worksheetIndex) {
   if (state.isDevMode) {
-    // "mock_region" uses the Measure Names/Values pattern (bar chart shape after pivot)
-    if (worksheetIndex === "mock_region") {
-      const pivoted = pivotMeasureNamesValues(
-        MOCK_DATA_PIVOT.columns,
-        MOCK_DATA_PIVOT.rows,
-        MOCK_DATA_PIVOT.columns.findIndex(c => c.fieldName === "Measure Names"),
-        MOCK_DATA_PIVOT.columns.findIndex(c => c.fieldName === "Measure Values")
-      );
-      pivoted.markType = "bar";
-      return pivoted;
-    }
-    return { ...MOCK_DATA, markType: "bar" };
+    // "mock_region" uses the Measure Names/Values pattern for demo purposes
+    return worksheetIndex === "mock_region" ? MOCK_DATA_PIVOT : MOCK_DATA;
   }
 
   const dashboard = tableau.extensions.dashboardContent.dashboard;
@@ -788,34 +778,10 @@ async function fetchWorksheetData(worksheetIndex) {
   );
 
   if (measureNamesIdx !== -1 && measureValuesIdx !== -1) {
-    const pivoted = pivotMeasureNamesValues(rawColumns, rawRows, measureNamesIdx, measureValuesIdx);
-    // After pivot, detect chart type from the worksheet's mark type
-    pivoted.markType = await getMarkType(ws);
-    return pivoted;
+    return pivotMeasureNamesValues(rawColumns, rawRows, measureNamesIdx, measureValuesIdx);
   }
 
-  const result = { columns: rawColumns, rows: rawRows };
-  result.markType = await getMarkType(ws);
-  return result;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET MARK TYPE — reads the worksheet's mark type from Tableau API
-// Returns: "bar", "pie", "line", "area", "text", or "unknown"
-// ─────────────────────────────────────────────────────────────────────────────
-async function getMarkType(ws) {
-  try {
-    // getSummaryColumnsInfoAsync gives us mark type in newer API versions
-    if (ws.getVisualSpecificationAsync) {
-      const spec = await ws.getVisualSpecificationAsync();
-      const mark = (spec?.marksSpecificationList?.[0]?.markType || "").toLowerCase();
-      if (mark) return mark;
-    }
-    // Fallback: check worksheet name hints (not ideal but helps when API lacks it)
-    return "unknown";
-  } catch(e) {
-    return "unknown";
-  }
+  return { columns: rawColumns, rows: rawRows };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1001,6 +967,7 @@ async function refreshData(worksheetIndex) {
       }, i * 18);
     });
 
+    showTable();
     const rowCount = data.rows.length;
     setStatus(`Refreshed — ${rowCount} rows in ${LANGUAGES[state.currentLang].label}`, "ok");
 
@@ -1174,18 +1141,13 @@ Return format exactly like this:
 function detectVizType(columns, rows) {
   if (columns.length < 2) return "table";
 
-  // ── Priority 1: use Tableau's own mark type if we have it ───────────────
-  const markType = state.rawData && state.rawData.markType;
-  if (markType) {
-    if (markType === "bar")  return "chart";
-    if (markType === "pie")  return "chart";
-    if (markType === "line") return "chart";
-    if (markType === "text" || markType === "square") return "table";
-    // For "unknown" or anything else, fall through to heuristic below
-  }
+  // If a pivot happened, it was originally Measure Names/Values — crosstab
+  // We flag this in state during fetch
+  if (state.rawData && state.rawData.wasPivoted) return "table";
 
-  // ── Priority 2: numeric heuristic ────────────────────────────────────────
   const numericRe = /^-?[\$€£]?[\d,]+\.?\d*[%KMBkm]?$/;
+
+  // Check how many columns look numeric based on first few rows
   const sampleRows = rows.slice(0, Math.min(5, rows.length));
   const numericCols = columns.map((_, colIdx) => {
     const vals = sampleRows.map(r => (r[colIdx] || "").trim()).filter(Boolean);
@@ -1195,8 +1157,7 @@ function detectVizType(columns, rows) {
   const dimCount     = numericCols.filter(n => !n).length;
   const measureCount = numericCols.filter(n => n).length;
 
-  // Classic chart shape: 1 dimension + 1 to 5 numeric measures
-  // Also covers pivoted data (wasPivoted) — after pivot it looks exactly like this
+  // Classic chart shape: 1 dimension + 1 to 5 measures
   if (dimCount === 1 && measureCount >= 1 && measureCount <= 5) return "chart";
 
   return "table";
@@ -1289,14 +1250,8 @@ function renderChart(headers, rows, originalHeaders = null) {
     return parseFloat(v.toString().replace(/[\$€£,%KMBkm,\s]/g, "")) || 0;
   }
 
-  // ── Choose chart type based on markType, fall back to heuristics ────────
-  const markType = state.rawData && state.rawData.markType;
-  const isPie        = markType === "pie" || (!markType && measureCount === 1);
-  const isHorizontal = false; // Tableau's bar is always vertical in summary data;
-                               // we render vertical grouped bar for all bar charts
-  // Note: Tableau horizontal bar charts return the same data structure as
-  // vertical ones — the orientation is a visual-only shelf setting. We always
-  // render as vertical grouped bar which is cleaner in a small iframe.
+  // ── Choose chart type: pie if 1 measure, bar if multiple ────────────────
+  const isPie = measureCount === 1;
   const chartType = isPie ? "pie" : "bar";
 
   // ── Build datasets ────────────────────────────────────────────────────────
@@ -1383,10 +1338,7 @@ function renderChart(headers, rows, originalHeaders = null) {
   activeChart = new Chart(canvas, config);
 
   // Update toolbar label
-  const markLabel = (state.rawData && state.rawData.markType && state.rawData.markType !== "unknown")
-    ? state.rawData.markType.charAt(0).toUpperCase() + state.rawData.markType.slice(1) + " Chart"
-    : (isPie ? "Pie Chart" : "Bar Chart");
-  chartTypeLbl.textContent = isPie ? `🥧 ${markLabel}` : `📊 ${markLabel}`;
+  chartTypeLbl.textContent = isPie ? "🥧 Pie Chart" : "📊 Bar Chart";
 
   // Set view toggle to chart mode
   document.querySelectorAll(".view-btn").forEach(b => {
